@@ -26,7 +26,6 @@ MQTT_USERNAME = ""
 MQTT_PASSWORD = ""
 UPDATE_INTERVAL = 60  # how often to post MQTT data, in seconds
 
-
 def status_handler(mode, status, ip):
     display.set_pen(BLACK)
     display.clear()
@@ -67,6 +66,20 @@ def describe_humidity(corrected_humidity):
         description = "bad"
     return description
 
+
+def describe_light(lux):
+    """Convert light level in lux to descriptive value."""
+    lux += 0.5
+    if lux < 50:
+        description = "dark"
+    elif 50 <= lux < 100:
+        description = "dim"
+    elif 100 <= lux < 500:
+        description = "light"
+    elif lux >= 500:
+        description = "bright"
+    return description
+
 def adjust_to_sea_pressure(pressure_hpa, temperature, altitude):
     """
     Adjust pressure based on your altitude.
@@ -104,9 +117,11 @@ def get_all_sensors():
     if not(heater == "Stable" and ltr_reading is not None):
         raise BaseException("No values")
 
-    return corrected_temperature, pressure_hpa, describe_pressure(pressure), corrected_humidity, describe_humidity(humidity), gas, status, mic_reading, lux
+    abs_humidity = ( 6.112 * math.exp((17.67 * corrected_temperature)/(corrected_temperature+243.5)) * corrected_humidity * 2.1674 ) / ( 273.15 + corrected_temperature )
 
-def draw_measurements(temperature, humidity, humidity_description, pressure, pressure_description, gas):
+    return corrected_temperature, pressure_hpa, describe_pressure(pressure), corrected_humidity, abs_humidity, describe_humidity(humidity), gas, status, mic_reading, lux, describe_light(lux)
+
+def draw_measurements(temperature, humidity, humidity_description, pressure, pressure_description, gas, lux, lux_description):
     led.set_rgb(0, 0, 0)
 
     # draw some stuff on the screen
@@ -129,10 +144,12 @@ def draw_measurements(temperature, humidity, humidity_description, pressure, pre
     display.set_pen(WHITE)
     display.text(f"rh {humidity:.0f}%", 0, 75, WIDTH, scale=3)
     display.text(f"{pressure:.0f}hPa", 0, 125, WIDTH, scale=3)
+    display.text(f"{lux:.0f} lux", 0, 175, WIDTH, scale=3)
 
     # draw the second column of text
     display.text(f"{humidity_description}", 125, 75, WIDTH, scale=3)
     display.text(f"{pressure_description}", 125, 125, WIDTH, scale=3)
+    display.text(f"{lux_description}", 125, 175, WIDTH, scale=3)
 
     # draw bar for gas
     if min_gas != max_gas:
@@ -220,12 +237,18 @@ pressure = 0
 pressure_description = "nah"
 humidity = 0
 humidity_description = "nah"
+lux = 0
+lux_description = "nah"
 gas = 0.0
+
+display_on = False
+cycles = 0
+display.set_backlight(0)
 
 while True:
 
     try:
-        temperature, pressure, pressure_description, humidity, humidity_description, gas, status, mic_reading, lux = get_all_sensors()
+        temperature, pressure, pressure_description, relative_humidity, humidity, humidity_description, gas, status, mic_reading, lux, lux_description = get_all_sensors()
 
         # record min and max gas readings
         if gas > max_gas:
@@ -240,7 +263,8 @@ while True:
             try:
                 mqtt_client.connect()
                 mqtt_client.publish(topic="renatolond/feeds/EnviroTemperature", msg=bytes(str(temperature), 'utf-8'), qos=1)
-                mqtt_client.publish(topic="renatolond/feeds/EnviroHumidity", msg=bytes(str(humidity), 'utf-8'), qos=1)
+                mqtt_client.publish(topic="renatolond/feeds/EnviroHumidity", msg=bytes(str(relative_humidity), 'utf-8'), qos=1)
+                mqtt_client.publish(topic="renatolond/feeds/EnviroAbsoluteHumidity", msg=bytes(str(humidity), 'utf-8'), qos=1)
                 mqtt_client.publish(topic="renatolond/feeds/EnviroPressure", msg=bytes(str(pressure), 'utf-8'), qos=1)
                 mqtt_client.publish(topic="renatolond/feeds/EnviroGas", msg=bytes(str(gas), 'utf-8'), qos=1)
                 mqtt_client.publish(topic="renatolond/feeds/EnviroLux", msg=bytes(str(lux), 'utf-8'), qos=1)
@@ -264,11 +288,24 @@ while True:
         display.set_backlight(1.0)
         TEMPERATURE_OFFSET = 5
         time.sleep(0.5)
+        display_on = True
     elif button_b.is_pressed:
         display.set_backlight(0)
         TEMPERATURE_OFFSET = 3
         time.sleep(0.5)
+        display_on = False
 
-    draw_measurements(temperature, humidity, humidity_description, pressure, pressure_description, gas)
+    should_show = display_on
+
+    if not(display_on):
+        cycles = (cycles + 1) % 60
+        if cycles == 0:
+          display.set_backlight(1.0)
+          should_show = True
+        if cycles == 5:
+          display.set_backlight(0)
+
+    if should_show:
+        draw_measurements(temperature, relative_humidity, humidity_description, pressure, pressure_description, gas, lux, lux_description)
 
     time.sleep(1.0)
